@@ -172,6 +172,7 @@ daily_stock_analysis/
 | `TICKPLUS_API_KEY` | [TickPlus（首选推荐）](http://www.tickplus.org/register?reg=5433cf922395) A 股 / ETF 日 K、实时指标和名称查询，失败自动回退，详见 [接入说明](tickplus.md) | 推荐 |
 | `TICKPLUS_PRIORITY` | TickPlus 普通日 K 优先级（同值时优先于内置源）；不影响已登记指数路由；默认 `0` | 可选 |
 | `TICKFLOW_API_KEY` | [TickFlow](https://tickflow.org) API Key；可选，用于 A 股日 K、实时行情、股票列表/名称与大盘复盘增强；失败或权限不足时自动回退。 | 可选 |
+| `HITHINK_FINANCE_API_KEY` | [HiThink Finance](https://fuyao.aicubes.cn/) API Key；可选，用于 A 股股票行情快照和历史日 K。默认优先级 7，不改变现有数据源顺序；失败、超时或权限不足自动回退。已登记指数、ETF 和海外市场不使用该源。 | 可选 |
 | `MX_APIKEY` / `MX_PRIORITY` | 妙想（东方财富 MX_API）补充数据源：在东财公开接口失败/限流时兜底获取筹码分布与个股资金流。**严格 opt-in 的第三方能力**：需用户自备 Key（妙想 Skills 页面），限时免费/会员配额策略可能调整、不承诺长期免费；未配置则不启用、行为不变。`MX_PRIORITY` 默认 `6`。GitHub Actions 需在 Secrets 配置 `MX_APIKEY` | 可选 |
 | `LONGBRIDGE_OAUTH_CLIENT_ID` | [Longbridge OpenAPI](https://open.longbridge.com/) OAuth client_id；留空且无 Legacy Access Token 时会兼容使用 `LONGBRIDGE_APP_KEY` | 可选 |
 | `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | OAuth token 缓存文件的 base64 内容，供 GitHub Actions / Docker 等 headless 环境恢复 SDK token 缓存 | 可选 |
@@ -193,7 +194,7 @@ daily_stock_analysis/
 
 妙想资金流仅使用明确的主力净流入金额指标；收盘价、占比及缺失金额不会作为资金流回退值。最新交易日金额缺失时保持未知，5/10 日窗口包含缺失金额时不输出合计，不使用更早日期补位。
 
-> **GitHub Actions：** 仓库自带 `00-daily-analysis.yml` 已把 `TUSHARE_TOKEN`、`TICKFLOW_API_KEY` / `TICKFLOW_*` 和上表中的 `LONGBRIDGE_*` 映射到任务环境。TickFlow 的 API Key 建议放在 **Secrets**，优先级、复权和批量开关可放在 **Variables** 或 **Secrets**。Longbridge OAuth 方式需要一个 client_id（优先 `LONGBRIDGE_OAUTH_CLIENT_ID`；留空且无 Legacy Access Token 时使用 `LONGBRIDGE_APP_KEY` 兼容），并把本机 `~/.longbridge/openapi/tokens/<client_id>` 文件 base64 后保存为 Secret `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64`；Legacy 方式仍可配置 `LONGBRIDGE_APP_KEY`、`LONGBRIDGE_APP_SECRET`、`LONGBRIDGE_ACCESS_TOKEN`。可选接入点变量（如 `LONGBRIDGE_REGION`）可放在 **Variables** 或 **Secrets**。
+> **GitHub Actions：** 仓库自带 `00-daily-analysis.yml` 已把 `TUSHARE_TOKEN`、`TICKFLOW_API_KEY` / `TICKFLOW_*`、`HITHINK_FINANCE_API_KEY` / `HITHINK_*` 和上表中的 `LONGBRIDGE_*` 映射到任务环境。TickFlow 与 HiThink 的 API Key 建议放在 **Secrets**，优先级、复权和批量开关可放在 **Variables** 或 **Secrets**。Longbridge OAuth 方式需要一个 client_id（优先 `LONGBRIDGE_OAUTH_CLIENT_ID`；留空且无 Legacy Access Token 时使用 `LONGBRIDGE_APP_KEY` 兼容），并把本机 `~/.longbridge/openapi/tokens/<client_id>` 文件 base64 后保存为 Secret `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64`；Legacy 方式仍可配置 `LONGBRIDGE_APP_KEY`、`LONGBRIDGE_APP_SECRET`、`LONGBRIDGE_ACCESS_TOKEN`。可选接入点变量（如 `LONGBRIDGE_REGION`）可放在 **Variables** 或 **Secrets**。
 
 > **TUSHARE_HTTP_URL 在每日 workflow 中的映射：** `00-daily-analysis.yml` 已显式映射 `TUSHARE_HTTP_URL`（采用 `vars.TUSHARE_HTTP_URL || secrets.TUSHARE_HTTP_URL` 优先级，与仓库现有 `TICKFLOW_PRIORITY` 等非敏感配置取值策略一致）。该地址属"接入地址"配置而非凭据，建议放 **Variables** 便于团队 review 与版本可审计。注意：真实的优先级是 `vars` 非空即胜出，**Secrets 中的同名变量无法覆盖非空 Variables**，两者中只有 vars 为空时 secrets 才被采用，请按这个真实语义做安全建模。GitHub 把 Variables 与 Secrets 设计为两套独立的写权限模型：任何对 repository Variables 有写权限的人或自动化，都可以在不读取、不修改 Secrets 的情况下，通过设置一个非空 Variable 来改写运行时端点（包括将 `TUSHARE_TOKEN` 和完整请求体指向攻击者控制的地址）；Secrets 仅保护值的机密性，并不自动提供"端点完整性"或"优先级覆盖"保障。如确需对端点施加更强的访问控制，请使用 GitHub Environment protection rules、CODEOWNERS、branch protection 或独立的部署审批流程，**不要把"只放 Secrets 而 Variables 留空"当作防改护栏**。未设置或留空时 fetcher 仍走官方 `http://api.tushare.pro` 端点，不会因为本变量缺失而报错。
 
@@ -443,6 +444,12 @@ daily_stock_analysis/
 | `TICKFLOW_KLINE_ADJUST` | TickFlow 日 K 复权模式：`none`、`forward`、`backward`、`forward_additive`、`backward_additive`。 | `none` | 可选 |
 | `TICKFLOW_BATCH_DAILY_ENABLED` | 是否启用 TickFlow 批量日 K 预取；权限不足会短期缓存失败状态，并继续走常规回退。 | `true` | 可选 |
 | `TICKFLOW_BATCH_SIZE` | TickFlow 日 K 与实时行情批量请求的单批最大标的数。 | `100` | 可选 |
+| `HITHINK_FINANCE_API_KEY` | HiThink Finance API Key；可选 A 股股票快照与历史日 K，失败自动回退。 | - | 可选 |
+| `HITHINK_PRIORITY` | HiThink 普通 A 股日 K 优先级；数字越小越早尝试。未配置 API Key 时不启用。默认排在现有数据源之后，已登记指数不读取本变量。 | `7` | 可选 |
+| `HITHINK_KLINE_ADJUST` | HiThink 日 K 复权模式：`none`、`forward`、`backward`。接入层会显式传参，避免使用官方接口的 `forward` 默认值。 | `none` | 可选 |
+| `HITHINK_BATCH_DAILY_ENABLED` | 是否启用 HiThink 批量日 K 预取。无批量权限时只关闭批量路径，并继续单只请求。 | `true` | 可选 |
+| `HITHINK_BATCH_SIZE` | HiThink 批量请求单批最大标的数。官方批量历史 K 线上限为 10。 | `10` | 可选 |
+| `HITHINK_TIMEOUT_SEC` | 单次 HiThink HTTP 请求超时秒数。 | `15` | 可选 |
 | `FUTU_HK_REALTIME_SOURCE_PRIORITY` | 港股实时行情独立优先级，可选 `futu`、`longbridge`、`akshare`、`yfinance`，按逗号分隔；失败自动回退。 | `futu,longbridge,akshare,yfinance` | 可选 |
 | `LONGBRIDGE_OAUTH_CLIENT_ID` | Longbridge OAuth client_id；留空且无 Legacy Access Token 时会兼容使用 `LONGBRIDGE_APP_KEY` | - | 可选 |
 | `LONGBRIDGE_OAUTH_TOKEN_CACHE_B64` | OAuth token 缓存文件的 base64 内容，供 GitHub Actions / Docker 等 headless 环境使用 | - | 可选 |
@@ -454,7 +461,7 @@ daily_stock_analysis/
 | `ENABLE_REALTIME_TECHNICAL_INDICATORS` | 盘中实时技术面：启用时用实时价计算 MA5/MA10/MA20 与多头排列（Issue #234）；关闭则用昨日收盘 | `true` | 可选 |
 | `ENABLE_CHIP_DISTRIBUTION` | 启用筹码分布分析（该接口不稳定，云端部署建议关闭）。GitHub Actions 用户需在 Repository Variables 中设置 `ENABLE_CHIP_DISTRIBUTION=true` 方可启用；workflow 默认关闭。 | `true` | 可选 |
 | `ENABLE_EASTMONEY_PATCH` | 东财接口补丁：东财接口频繁失败（如 RemoteDisconnected、连接被关闭）时建议设为 `true`，注入 NID 令牌与随机 User-Agent 以降低被限流概率 | `false` | 可选 |
-| `REALTIME_SOURCE_PRIORITY` | 实时行情源优先级，逗号分隔；Actions 未设置此 Variable 时保留空值，由运行时按已配置的 Key 自动选择 TickPlus / Tushare / 免费源；显式配置保持用户顺序。需要显式加入 `tickflow` 才会使用 TickFlow 实时行情。 | 见 `.env.example` | 可选 |
+| `REALTIME_SOURCE_PRIORITY` | 实时行情源优先级，逗号分隔；Actions 未设置此 Variable 时保留空值，由运行时按已配置的 Key 自动选择 TickPlus / Tushare / 免费源；显式配置保持用户顺序。需要显式加入 `tickflow` 或 `hithink` 才会使用对应实时行情。 | 见 `.env.example` | 可选 |
 | `ENABLE_FUNDAMENTAL_PIPELINE` | 基本面聚合总开关；关闭时仅返回 `not_supported` 块，不改变原分析链路 | `true` | 可选 |
 | `FUNDAMENTAL_STAGE_TIMEOUT_SECONDS` | 基本面阶段总时延预算（秒） | `8.0` | 可选 |
 | `FUNDAMENTAL_FETCH_TIMEOUT_SECONDS` | 单能力源调用超时（秒）；市场结构行业/概念排行也复用该预算 | `8.0` | 可选 |
@@ -471,8 +478,9 @@ daily_stock_analysis/
 > - 台股：在美股/港股 offshore 基础路径之外，`institution` 区块额外展示三大法人原始买卖超净额（TWSE T86 / TPEx，默认开启、fail-open，取不到数据时维持 `not_supported`）；`capital_flow`、`dragon_tiger`、`boards` 仍为 `not_supported`；
 > - 任何异常走 fail-open，仅记录错误，不影响技术面/新闻/筹码主链路。
 > - 配置 `TICKFLOW_API_KEY` 后，TickFlow 会作为可选 A 股日 K 数据源和大盘复盘增强源实例化；`TICKFLOW_PRIORITY` 只影响普通 A 股日 K/通用数据源回退链。实时行情优先级由 `REALTIME_SOURCE_PRIORITY` 单独控制，只有显式包含 `tickflow` 时才会使用 TickFlow 实时行情。`REALTIME_SOURCE_PRIORITY` 中排在 `tickflow` 前面的数据源会先被尝试。
+> - 配置 `HITHINK_FINANCE_API_KEY` 后，HiThink Finance 作为可选 A 股股票数据源实例化，调用官方 `GET /api/a-share/prices/snapshot`、`/historical` 和 `/historical-batch`。`HITHINK_PRIORITY` 默认 `7`，只追加到普通日 K 回退链末尾，不改变现有数据源优先级。实时行情不自动插入 `REALTIME_SOURCE_PRIORITY`，只有显式包含 `hithink` 时才使用。已登记指数仍走 Tencent → AkShare → TickFlow → YFinance，ETF、港股和美股不进入该源。成交量按官方“股”口径保存，成交额按“元”保存；复权默认显式传 `none`。批量接口单次最多 10 个代码，超过 10 年的窗口会拆分。日 K 缓存按实际获取区间保存，只有请求区间被这些区间完整覆盖才命中，空响应不会把中间缺口算成已覆盖。批量响应的 `interval` 必须是 `1d`，`adjust` 必须与请求一致，否则不写入缓存并继续单只请求。批量权限不足只关闭批量预取。业务码 2003 只冷却当前能力，不会暂停其他能力。单只历史日 K 或快照权限不足时，只冷却对应能力，另一类请求和其他数据源继续可用。Key 不会写入日志或能力状态。配置 Key 后，基本面先取 AkShare，再用 HiThink 补齐缺失的财务指标、三大报表和估值字段；已有数值和不同报告期不覆盖。HiThink 三张报表必须同一报告期，跨期字段保持为空，业绩预告、业绩快报、分红和机构持仓仍来自 AkShare。估值补充计入基本面总超时。主要指数快照、行业和概念排行、名称、代码表、热股榜、涨停池只作为现有源失败后的补充。排行分批覆盖整个行业或概念目录，覆盖率按实际返回的有效涨跌幅计算，缺失或无效行情视为部分覆盖。权限不足时停止后续批次并标记部分覆盖；部分结果会继续查找完整排行，只剩部分结果时保留 partial 并使用短缓存。快照权限不足不再拆成单只请求。财务请求按基本面剩余时间停止后续报表。日 K 预取只预热当前会实际提供数据的来源。涨停原因单独保留，名称搜索和代码表共用目录权限冷却，冷却期内不再重复请求。代码表触达分页上限时标记截断。指数日 K 不进入固定路由，只在 Tencent、AkShare、TickFlow、YFinance 都失败后尝试，并写入数据源诊断。指数快照和指数日 K 权限不足分别冷却，冷却期间不再请求对应接口。当前指数注册表只有 SH、SZ、CSI；CSI 不送入 HiThink，`.TI` 只在注册表以后出现对应条目时使用。
 > - 当前 `IndexRegistry` 已登记的全部沪深指数（`sh`/`sz`/`csi` 前缀，具体清单以 [指数自选股配置](#指数自选股配置) 的注册表说明与 `scripts/stock_index_seeds/index_registry.csv` 为准）在使用显式市场输入（也接受 `000016.SH` 等交易所后缀形式）时，不参与通用 priority 排序，固定按 Tencent → AkShare → TickFlow → YFinance 降级；未配置或不可用的来源会跳过。裸 `000016` 等代码仍按股票处理，不触发指数链。该固定链不读取 `EFINANCE_PRIORITY`、`AKSHARE_PRIORITY`、`TUSHARE_PRIORITY`、`TICKFLOW_PRIORITY`、`PYTDX_PRIORITY`、`BAOSTOCK_PRIORITY`、`YFINANCE_PRIORITY` 或 `TENCENT_PRIORITY`，不影响普通股票和实时行情的既有顺序。
-> - 已登记指数名称优先来自本地注册表；只有注册名称无效时才按 Tencent → AkShare → TickFlow 查询，名称链不使用 YFinance。指数日线四源全部失败时返回空结果并记录汇总告警；普通股票仍保持既有的 `DataFetchError` 最终失败契约。
+> - 已登记指数名称优先来自本地注册表；只有注册名称无效时才按 Tencent → AkShare → TickFlow 查询，名称链不使用 YFinance。指数日线固定四源全部失败后，已配置的 HiThink 再尝试 SH/SZ 代码并记录诊断；仍然失败才返回空结果和汇总告警。普通股票仍保持既有的 `DataFetchError` 最终失败契约。
 > - TickFlow 日 K 默认 `TICKFLOW_KLINE_ADJUST=none`；日线 `volume` 从手统一转为股，`amount` 保持元口径。
 > - TickFlow 日 K 区间请求会显式传入 `start_time` / `end_time` / `count`；官方 quickstart 明确说明时间范围查询仍受 `count` 限制。若返回非空但行数打满 `count` 且首个返回交易日晚于请求起始交易日，系统会判定为疑似截断，不写入缓存并让 manager 继续回退。
 > - 批量分析时，`prefetch_daily_klines()` 会在逐股 `get_daily_data()` 之前预热进程内缓存，不改变对外调用路径。
@@ -1010,6 +1018,10 @@ P3 补齐普通分析主路径使用的实时行情质量元数据，但仍不�
 
 整源 fallback 的语义固定为：`source` 保留实际成功的数据源 token，`fallback_from` 记录本轮失败的最高优先级整源 token；首选源成功后只从后续源补字段时不写 `fallback_from`。`AnalysisContextBuilder` 只映射这些上游 artifact，不重新取数、不做质量评分；quote block 状态按 `STALE > FALLBACK > AVAILABLE` 归并。盘中实时价覆盖 `today` 时会标记 `is_partial_bar`、`is_estimated`、`estimated_fields`、`realtime_source` 和 quote 元数据；`daily_bars` block 仍表示 storage 中完整日线窗口，partial/estimated 只进入 technical block。freshness scoring、盘中 cache TTL 分级、Agent 工具级复用和 API/Web 展示留给后续阶段。
 
+盘中（含午休、临近收盘）和盘后用实时行情覆盖 `today` 时，若历史 `today` 早于当前交易日，且报价携带可解析的行情交易日或 provider 时间戳以确认已进入当前交易日，会先将历史 `today` 复制到 `yesterday`，再计算开盘价回退、涨跌幅、成交量比率和行情快照。盘前、非交易日、缺少阶段上下文或已存有当日日线时保留原 `yesterday`。缺失或无法解析行情日期的报价（包括港股缓存报价）也保留原基准；`fetched_at` 只表示系统获取时间，价格、昨收价或 OHLC 的差异不能证明报价属于当前交易日。
+
+行情日期必须与当前交易日完全一致，未来日期及格式错误的时间戳不触发基准平移。Yahoo 日线的 `quote_date` 仅代表交易日，不作为 `provider_timestamp` 计算过期时间；实时行情使用未复权价格。
+
 #### 分析阶段入口与任务队列透传（Issue #1386 P4a）
 
 P4a 新增 `analysis_phase=auto|premarket|intraday|postmarket` 请求参数，默认 `auto`，用于让 API 调用方显式覆盖本次分析阶段。该参数目前接入 `POST /api/v1/analysis/analyze`、异步任务队列、`AnalysisService`、普通分析 pipeline 和市场阶段上下文；Web 前端类型和 API mapper 已承接该字段，但不新增页面 selector，Bot、schedule、GitHub Actions 和 DB migration 也不在本阶段范围内。
@@ -1252,6 +1264,8 @@ Bark 使用全局模板时需显式写出 Bark body：
 ```env
 CUSTOM_WEBHOOK_BODY_TEMPLATE={"title":$title_json,"body":$content_json,"group":"stock"}
 ```
+
+Bark 受 APNs 4096 字节 payload 上限约束，发往 `api.day.app` 的正文会按约 3000 字节截断（中文约 1000 字），详见 [通知说明](notifications.md)。
 
 NapCat / OneBot 示例需按实际 endpoint、`user_id` 或 `group_id` 调整：
 
@@ -1866,7 +1880,7 @@ python main.py --serve-only --host 0.0.0.0 --port 8888
 | 港股 | hk + 5位数字 | `hk00700`、`hk09988` |
 | 美股 | 1-5 字母（可选 .X 后缀） | `AAPL`、`TSLA`、`BRK.B` |
 | 日股 | Yahoo 后缀 `.T` | `7203.T`、`6758.T` |
-| 韩股 | Yahoo 后缀 `.KS` / `.KQ` | `005930.KS`、`035720.KQ` |
+| 韩股 | Yahoo 后缀 `.KS` / `.KQ` | `005930.KS`、`247540.KQ` |
 | 美股指数 | SPX/DJI/IXIC 等 | `SPX`、`DJI`、`NASDAQ`、`VIX` |
 
 ### 注意事项
