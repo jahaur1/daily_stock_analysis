@@ -36,6 +36,7 @@ from src.agent.provider_trace import (
     trace_model_matches,
 )
 from src.llm.errors import call_litellm_with_param_recovery
+from src.core.stock_execution_context import raise_if_stock_cancelled
 from src.llm.backend_registry import (
     AUTO_AGENT_BACKEND_ID,
     GENERATION_ONLY_BACKEND_IDS,
@@ -53,6 +54,12 @@ from src.llm.provider_cache import (
 )
 
 logger = logging.getLogger(__name__)
+
+# 本项目不注册 LiteLLM success callback，用量从响应自身统计。LiteLLM 默认会为每个
+# streaming chunk 向全局线程池提交一次 asyncio.run() 日志任务；Windows 上每次都会新建
+# Proactor 事件循环和回环 socketpair，长报告产生数千次，既耗 CPU，又会让线程池卡在
+# socketpair 的 accept() 上，导致 CLI 打印「程序执行完成」后进程无法退出。
+litellm.disable_streaming_logging = True
 
 
 def _resolve_litellm_exception(name: str) -> type[BaseException]:
@@ -632,6 +639,7 @@ class LLMToolAdapter:
         last_error = None
         hit_rate_limit = False
         for idx, model in enumerate(models_to_try):
+            raise_if_stock_cancelled()
             remaining_timeout = timeout
             if timeout is not None and timeout > 0:
                 remaining_timeout = max(0.0, float(timeout) - (time.time() - started_at))
@@ -650,6 +658,7 @@ class LLMToolAdapter:
                     timeout=remaining_timeout,
                 )
             except Exception as e:
+                raise_if_stock_cancelled()
                 if isinstance(e, _resolve_litellm_exception("RateLimitError")):
                     logger.warning("Agent LLM rate-limited on %s: %s", model, e)
                     last_error = e
