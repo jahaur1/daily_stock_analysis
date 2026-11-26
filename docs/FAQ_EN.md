@@ -4,6 +4,23 @@ This document compiles common issues encountered by users and their solutions.
 
 ---
 
+## Source Installation
+
+### Windows dependency installation fails on long paths
+
+If `pip install -r requirements.txt` raises `OSError: [Errno 2]` for a file under `.venv\Lib\site-packages\litellm\` and mentions Windows long-path support, the full install path may exceed the Windows path-length limit.
+
+Clone or extract a fresh copy of the project into a short, writable directory such as `C:\dsa`. From that directory, use PowerShell to create a new virtual environment and reinstall the dependencies.
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+See [Microsoft Learn](https://learn.microsoft.com/windows/win32/fileio/maximum-file-path-limitation) for Windows long-path requirements.
+
+---
+
 ## Data Related
 
 ### Q1: US stock codes (e.g., AMD, AAPL) show incorrect prices during analysis?
@@ -377,6 +394,20 @@ python main.py --market-only
 **Cause**: Earlier versions used regex matching for statistics, may not match actual recommendations.
 
 **Solution**: Fixed in latest version, AI model now directly outputs `decision_type` field for accurate statistics.
+
+---
+
+### Q18: Why didn't GitHub Actions run automatically on schedule in my fork, and how do I keep it updated?
+
+**Causes**:
+1. GitHub disables scheduled workflows on newly forked repositories until you manually enable them in the `Actions` tab.
+2. GitHub automatically pauses `schedule` triggers in any repository with **no repository activity for 60 days**.
+3. Local edits to `.github/workflows/*.yml` can block `Sync fork`.
+
+**Solution**:
+1. Click `Sync fork` -> `Update branch` on your GitHub repository page regularly (prefer configuring everything via `Secrets and variables` instead of editing workflow files).
+2. Re-enable the workflow under `Actions -> 每日股票分析 -> Enable workflow` if it was paused after 60 days of inactivity.
+3. For local runs, execute `python main.py --doctor` for an offline, redacted diagnostic summary of your config, LLM readiness, notifications, and storage permissions.
 
 ---
 

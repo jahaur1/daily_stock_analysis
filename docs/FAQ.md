@@ -4,6 +4,23 @@
 
 ---
 
+## 🖥️ 源码安装
+
+### Windows 依赖安装路径过长
+
+如果 `pip install -r requirements.txt` 在写入 `.venv\Lib\site-packages\litellm\` 中的文件时报 `OSError: [Errno 2]`，并提示 Windows 长路径支持，完整安装路径可能超出了 Windows 的路径长度限制。
+
+将源码重新克隆或解压到一个较短且有写入权限的目录（例如 `C:\dsa`），然后在该目录中用 PowerShell 创建新的虚拟环境并重新安装。
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+```
+
+Windows 长路径支持的适用条件见 [Microsoft Learn](https://learn.microsoft.com/windows/win32/fileio/maximum-file-path-limitation)。
+
+---
+
 ## 📊 数据相关
 
 ### Q1: 美股代码（如 AMD, AAPL）分析时价格显示不正确？
@@ -421,6 +438,20 @@ python main.py --market-only
 - `TRADING_DAY_CHECK_ENABLED=true` 且 `force_run=false`：非交易日跳过（默认）
 - `force_run=true`：本次即使非交易日也执行
 - `TRADING_DAY_CHECK_ENABLED=false`：定时和手动都不做交易日检查
+
+---
+
+### Q19: Fork 仓库后 GitHub Actions 为什么没有按时自动运行？如何同步更新与自检？
+
+**常见原因**：
+1. GitHub 对 Fork 仓库默认禁用定时 Workflows，需要进入 Fork 的 `Actions` 标签手动点击启用。
+2. GitHub 平台规定若仓库连续 **60 天无仓库活动**，会自动暂停 `schedule` 定时任务。
+3. 未同步上游仓库的最新修复，或本地修改了 `.github/workflows/*.yml` 导致 `Sync fork` 冲突。
+
+**解决方案**：
+1. 在你 Fork 的仓库首页点击 `Sync fork` → `Update branch` 同步最新代码（建议不要直接修改 workflow 文件，所有配置通过 `Settings → Secrets and variables → Actions` 传递）。
+2. 如已被 GitHub 自动暂停定时任务，进入 `Actions → 每日股票分析` 点击 `Enable workflow` 重新开启。
+3. 本地运行可使用 `python main.py --doctor` 一键输出脱敏配置/模型/通知/存储诊断信息，快速定位异常。
 
 ---
 

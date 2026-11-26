@@ -827,6 +827,77 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertNotIn("LLM_UNUSED_API_KEY", raw_items)
         self.assertNotIn("UNRELATED_API_KEY", raw_items)
 
+    def test_get_config_reports_active_process_env_litellm_yaml(self) -> None:
+        yaml_path = Path(self.temp_dir.name) / "litellm.yaml"
+        yaml_path.write_text(
+            json.dumps({
+                "model_list": [{
+                    "model_name": "openai/yaml-model",
+                    "litellm_params": {
+                        "model": "openai/yaml-model",
+                        "api_base": "https://yaml.example/v1",
+                    },
+                }],
+            }),
+            encoding="utf-8",
+        )
+        self._rewrite_env("STOCK_LIST=600519")
+
+        with patch.dict(
+            os.environ,
+            {
+                "LITELLM_CONFIG": str(yaml_path),
+                "LLM_CHANNELS": "fallback",
+            },
+            clear=False,
+        ):
+            payload = self.service.get_config(include_schema=True)
+
+        items = {item["key"]: item for item in payload["items"]}
+        self.assertTrue(payload["llm_yaml_active"])
+        self.assertEqual(items["LITELLM_CONFIG"]["value"], str(yaml_path))
+        self.assertFalse(items["LITELLM_CONFIG"]["raw_value_exists"])
+
+    def test_get_config_survives_malformed_litellm_yaml_shapes(self) -> None:
+        yaml_path = Path(self.temp_dir.name) / "malformed-litellm.yaml"
+        yaml_path.write_text("- not-a-mapping\n- null\n", encoding="utf-8")
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            f"LITELLM_CONFIG={yaml_path}",
+            "LLM_CHANNELS=fallback",
+            "LLM_FALLBACK_MODELS=openai/fallback",
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            payload = self.service.get_config(include_schema=True)
+
+        self.assertFalse(payload["llm_yaml_active"])
+        self.assertIn("LITELLM_CONFIG", {item["key"] for item in payload["items"]})
+
+    def test_empty_litellm_yaml_entries_fall_back_to_llm_channels_consistently(self) -> None:
+        yaml_path = Path(self.temp_dir.name) / "empty-entry-litellm.yaml"
+        yaml_path.write_text(
+            "model_list:\n  - {}\n  - litellm_params: {}\n",
+            encoding="utf-8",
+        )
+        self._rewrite_env(
+            "STOCK_LIST=600519",
+            f"LITELLM_CONFIG={yaml_path}",
+            "LLM_CHANNELS=fallback",
+            "LLM_FALLBACK_PROTOCOL=openai",
+            "LLM_FALLBACK_API_KEY=sk-fallback",
+            "LLM_FALLBACK_MODELS=openai/fallback-model",
+        )
+
+        with patch.dict(os.environ, {"ENV_FILE": str(self.env_path)}, clear=True):
+            Config.reset_instance()
+            runtime_cfg = Config.get_instance()
+            payload = self.service.get_config(include_schema=True)
+
+        self.assertFalse(payload["llm_yaml_active"])
+        self.assertEqual(runtime_cfg.llm_models_source, "llm_channels")
+        self.assertEqual(runtime_cfg.litellm_model, "openai/fallback-model")
+
     def test_get_config_runtime_env_fallback_does_not_persist_llm_fields_on_save(self) -> None:
         self._rewrite_env(
             "STOCK_LIST=600519",
@@ -1875,6 +1946,23 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(storage_check["status"], "configured")
         self.assertFalse(missing_parent.exists())
 
+    def test_get_setup_status_storage_check_rejects_directory_and_file_ancestor(self) -> None:
+        blocker_file = Path(self.temp_dir.name) / "main.py"
+        blocker_file.write_text("# regular file", encoding="utf-8")
+
+        for invalid_db in (Path(self.temp_dir.name), blocker_file / "stock_analysis.db"):
+            self._rewrite_env(
+                "LITELLM_MODEL=gemini/gemini-3-flash-preview",
+                "GEMINI_API_KEY=secret-key-value",
+                "STOCK_LIST=600519",
+                f"DATABASE_PATH={invalid_db}",
+            )
+            with patch.dict(os.environ, {}, clear=True):
+                status = self.service.get_setup_status()
+            storage_check = next(check for check in status["checks"] if check["key"] == "storage")
+            self.assertEqual(storage_check["status"], "needs_action")
+            self.assertFalse(status["is_complete"])
+
     def test_export_desktop_env_returns_raw_text(self) -> None:
         self.env_path.write_text(
             "# Desktop config\nSTOCK_LIST=600519,000001\n\nGEMINI_API_KEY=secret-key-value\n",
@@ -2751,7 +2839,7 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         market_review_schema = items["MARKET_REVIEW_REGION"]["schema"]
         self.assertEqual(
             market_review_schema["validation"]["allowed_values"],
-            ["cn", "hk", "us", "jp", "kr", "both"],
+            ["cn", "hk", "us", "jp", "kr", "tw", "both"],
         )
         self.assertEqual(market_review_schema["validation"]["delimiter"], ",")
         self.assertEqual(
@@ -2875,12 +2963,13 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertEqual(validation["issues"], [])
 
     def test_validate_accepts_comma_separated_market_review_region(self) -> None:
-        validation = self.service.validate(
-            items=[{"key": "MARKET_REVIEW_REGION", "value": "cn,jp,us"}]
-        )
-
-        self.assertTrue(validation["valid"])
-        self.assertEqual(validation["issues"], [])
+        for value in ("cn,jp,us", "tw", "cn,tw"):
+            with self.subTest(value=value):
+                validation = self.service.validate(
+                    items=[{"key": "MARKET_REVIEW_REGION", "value": value}]
+                )
+                self.assertTrue(validation["valid"])
+                self.assertEqual(validation["issues"], [])
 
     def test_validate_accepts_blank_context_compression_preset_fields(self) -> None:
         validation = self.service.validate(
@@ -3505,6 +3594,226 @@ class SystemConfigServiceTestCase(unittest.TestCase):
         self.assertNotIn("access_token=first", str(payload))
         self.assertNotIn("token=second", str(payload))
 
+    @patch("src.notification_sender.custom_webhook_sender.requests.post")
+    def test_test_notification_channel_preserves_other_webhooks_when_dingtalk_errmsg_has_invalid_url(
+        self, mock_post
+    ) -> None:
+        mock_post.side_effect = [
+            self._mock_http_response(
+                200,
+                {
+                    "errcode": 310000,
+                    "errmsg": "rejected https://[broken.example/path?access_token=secret123",
+                },
+            ),
+            self._mock_http_response(200, {"queued": True}),
+        ]
+
+        with self._notification_test_env():
+            payload = self.service.test_notification_channel(
+                channel="custom",
+                items=[
+                    {
+                        "key": "CUSTOM_WEBHOOK_URLS",
+                        "value": (
+                            "https://oapi.dingtalk.com/robot/send?access_token=dingsecret,"
+                            "https://example.com/webhook"
+                        ),
+                    }
+                ],
+                title="Test title",
+                content="hello",
+                timeout_seconds=4,
+            )
+
+        self.assertTrue(payload["success"])
+        self.assertEqual(len(payload["attempts"]), 2)
+        self.assertFalse(payload["attempts"][0]["success"])
+        self.assertEqual(payload["attempts"][0]["error_code"], "api_error")
+        self.assertFalse(payload["attempts"][0]["retryable"])
+        self.assertTrue(payload["attempts"][1]["success"])
+        self.assertNotIn("secret123", str(payload))
+        self.assertNotIn("dingsecret", str(payload))
+
+    @patch("src.notification_sender.custom_webhook_sender.requests.post")
+    def test_test_notification_channel_marks_dingtalk_rate_limit_retryable(self, mock_post) -> None:
+        mock_post.return_value = self._mock_http_response(
+            200,
+            {"errcode": 410100, "errmsg": "rate limit exceeded"},
+        )
+
+        with self._notification_test_env():
+            payload = self.service.test_notification_channel(
+                channel="custom",
+                items=[
+                    {
+                        "key": "CUSTOM_WEBHOOK_URLS",
+                        "value": "https://oapi.dingtalk.com/robot/send?access_token=dingsecret",
+                    }
+                ],
+                title="Test title",
+                content="hello",
+                timeout_seconds=4,
+            )
+
+        self.assertFalse(payload["success"])
+        self.assertEqual(payload["error_code"], "send_failed")
+        self.assertTrue(payload["retryable"])
+        self.assertEqual(len(payload["attempts"]), 1)
+        self.assertEqual(payload["attempts"][0]["error_code"], "api_error")
+        self.assertTrue(payload["attempts"][0]["retryable"])
+
+    @patch("src.notification_sender.custom_webhook_sender.requests.post")
+    def test_test_notification_channel_redacts_json_quoted_dingtalk_secrets(self, mock_post) -> None:
+        mock_post.return_value = self._mock_http_response(
+            200,
+            {
+                "errcode": 310000,
+                "errmsg": 'invalid request: {"access_token": "JSONSECRET789", "sign": "JSONSIGN012"}',
+            },
+        )
+
+        with self._notification_test_env():
+            payload = self.service.test_notification_channel(
+                channel="custom",
+                items=[
+                    {
+                        "key": "CUSTOM_WEBHOOK_URLS",
+                        "value": "https://oapi.dingtalk.com/robot/send?access_token=dingsecret",
+                    }
+                ],
+                title="Test title",
+                content="hello",
+                timeout_seconds=4,
+            )
+
+        self.assertFalse(payload["success"])
+        self.assertNotIn("JSONSECRET789", str(payload))
+        self.assertNotIn("JSONSIGN012", str(payload))
+        self.assertNotIn("dingsecret", str(payload))
+        self.assertNotIn("[REDACTED]]", str(payload))
+
+    @patch("src.notification_sender.custom_webhook_sender.requests.post")
+    def test_test_notification_channel_redacts_escaped_quote_json_secrets(self, mock_post) -> None:
+        inner_json = json.dumps({"password": 'PW_Q_SECRET901"TAIL\\902', "sign": 'SG_Q_VAL903"END'})
+        mock_post.return_value = self._mock_http_response(
+            200,
+            {
+                "errcode": 310000,
+                "errmsg": f"invalid request: {inner_json} nested={json.dumps(inner_json)}",
+            },
+        )
+
+        with self._notification_test_env():
+            payload = self.service.test_notification_channel(
+                channel="custom",
+                items=[
+                    {
+                        "key": "CUSTOM_WEBHOOK_URLS",
+                        "value": "https://oapi.dingtalk.com/robot/send?access_token=dingsecret",
+                    }
+                ],
+                title="Test title",
+                content="hello",
+                timeout_seconds=4,
+            )
+
+        self.assertFalse(payload["success"])
+        rendered = str(payload)
+        for leaked in ("PW_Q_SECRET901", "TAIL", "902", "SG_Q_VAL903", "dingsecret"):
+            self.assertNotIn(leaked, rendered)
+
+    @patch("src.notification_sender.custom_webhook_sender.requests.post")
+    def test_test_notification_channel_redacts_url_adjacent_to_escaped_quote_json_secret(self, mock_post) -> None:
+        """OR-COR-87984975: URL inside JSON/double-escaped credential with trailing escaped quote must not leak suffix."""
+        inner_json = json.dumps({"secret": 'https://proxy.example/cb?k=SECRET123"TAIL_LEAK\\END_LEAK', "ok": 1})
+        mock_post.return_value = self._mock_http_response(
+            200,
+            {
+                "errcode": 310000,
+                "errmsg": f"proxy error: {inner_json} nested={json.dumps(inner_json)}",
+            },
+        )
+
+        with self._notification_test_env():
+            payload = self.service.test_notification_channel(
+                channel="custom",
+                items=[
+                    {
+                        "key": "CUSTOM_WEBHOOK_URLS",
+                        "value": "https://oapi.dingtalk.com/robot/send?access_token=dingsecret",
+                    }
+                ],
+                title="Test title",
+                content="hello",
+                timeout_seconds=4,
+            )
+
+        self.assertFalse(payload["success"])
+        rendered = str(payload)
+        for leaked in ("SECRET123", "TAIL_LEAK", "END_LEAK", "dingsecret"):
+            self.assertNotIn(leaked, rendered)
+        self.assertNotIn("[REDACTED]]", rendered)
+
+    @patch("src.notification_sender.custom_webhook_sender.requests.post")
+    def test_test_notification_channel_redacts_arbitrarily_nested_json_secrets_and_no_double_bracket(
+        self, mock_post
+    ) -> None:
+        """OR-COR-f3da1870: 3x/4x json.dumps escaped secrets, trailing backslash, adjacent URL, and O(n) ReDoS guard."""
+        import time as _time
+
+        base = {
+            "secret": 'TOPSECRET_765"TAIL_SECRET_876\\END_SECRET_987\\',
+            "token": 'https://proxy.example/cb?k=URLSECRET_321"URLTAIL_654\\',
+            "ok": 1,
+        }
+        nested_3x = json.dumps(json.dumps(json.dumps(base)))
+        nested_4x = json.dumps(nested_3x)
+
+        for label, encoded in (("3x", nested_3x), ("4x", nested_4x)):
+            with self.subTest(depth=label):
+                sanitized = self.service._sanitize_notification_text(encoded)
+                for leaked in ("TOPSECRET_765", "TAIL_SECRET_876", "END_SECRET_987", "URLSECRET_321", "URLTAIL_654"):
+                    self.assertNotIn(leaked, sanitized)
+                self.assertIn("[REDACTED]", sanitized)
+                self.assertNotIn("[REDACTED]]", sanitized)
+
+        # Backslash flood must run in linear time without backtracking.
+        start = _time.monotonic()
+        flood_out = self.service._sanitize_notification_text("secret" + ("\\" * 50000) + "a")
+        self.assertLess(_time.monotonic() - start, 0.2)
+        self.assertTrue(flood_out.startswith("secret"))
+
+        # End-to-end channel test with 3x json.dumps DingTalk error payload.
+        err_3x = json.dumps(
+            json.dumps(
+                json.dumps({"secret": 'TOPSECRET_765"TAIL_SECRET_876\\END_SECRET_987', "ok": 1})
+            )
+        )
+        mock_post.return_value = self._mock_http_response(
+            200,
+            {"errcode": 310000, "errmsg": f"nested={err_3x}"},
+        )
+        with self._notification_test_env():
+            payload = self.service.test_notification_channel(
+                channel="custom",
+                items=[
+                    {
+                        "key": "CUSTOM_WEBHOOK_URLS",
+                        "value": "https://oapi.dingtalk.com/robot/send?access_token=dingsecret",
+                    }
+                ],
+                title="Test title",
+                content="hello",
+                timeout_seconds=4,
+            )
+
+        self.assertFalse(payload["success"])
+        rendered = str(payload)
+        for leaked in ("TOPSECRET_765", "TAIL_SECRET_876", "END_SECRET_987", "dingsecret"):
+            self.assertNotIn(leaked, rendered)
+        self.assertNotIn("[REDACTED]]", rendered)
+
     @patch("src.notification_sender.ntfy_sender.requests.post")
     def test_test_notification_channel_supports_ntfy_and_masks_topic_target(self, mock_post) -> None:
         mock_post.return_value = self._mock_http_response(200)
@@ -3523,7 +3832,10 @@ class SystemConfigServiceTestCase(unittest.TestCase):
 
         self.assertTrue(payload["success"])
         self.assertEqual(mock_post.call_args.args[0], "https://ntfy.sh")
-        self.assertEqual(mock_post.call_args.kwargs["json"]["topic"], "private-topic")
+        self.assertEqual(
+            json.loads(mock_post.call_args.kwargs["data"].decode("utf-8"))["topic"],
+            "private-topic",
+        )
         self.assertEqual(mock_post.call_args.kwargs["headers"]["Authorization"], "Bearer secret-token")
         self.assertEqual(mock_post.call_args.kwargs["timeout"], 4)
         self.assertIn("https://ntfy.sh/***", payload["attempts"][0]["target"])
@@ -4841,14 +5153,14 @@ class SystemConfigServiceTestCase(unittest.TestCase):
     def test_update_market_review_region_accepts_comma_separated_regions(self) -> None:
         response = self.service.update(
             config_version=self.manager.get_config_version(),
-            items=[{"key": "MARKET_REVIEW_REGION", "value": "cn,jp,us"}],
+            items=[{"key": "MARKET_REVIEW_REGION", "value": "cn,jp,us,tw"}],
             reload_now=False,
         )
 
         self.assertTrue(response["success"])
         self.assertIn("MARKET_REVIEW_REGION", response["updated_keys"])
         current_map = self.manager.read_config_map()
-        self.assertEqual(current_map["MARKET_REVIEW_REGION"], "cn,jp,us")
+        self.assertEqual(current_map["MARKET_REVIEW_REGION"], "cn,jp,us,tw")
 
     def test_import_env_market_review_region_accepts_comma_separated_regions(self) -> None:
         response = self.service.import_env(

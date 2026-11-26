@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveWebBuildInfo } from '../../utils/constants';
 import { resetSharedDesktopUpdateState } from '../../desktop/updateStore';
 import type { SetupStatusResponse } from '../../types/systemConfig';
+import { createParsedApiError, type ParsedApiError } from '../../api/error';
 import SettingsPage from '../SettingsPage';
 import { DesktopUpdateIndicator } from '../../components/layout/DesktopUpdateIndicator';
 
@@ -157,10 +158,19 @@ vi.mock('../../components/settings', async () => {
   return ({
   AuthSettingsCard: () => <div>认证与登录保护</div>,
   ChangePasswordCard: () => <div>修改密码</div>,
-  IntelligentImport: ({ onMerged }: { onMerged: (value: string) => void }) => (
-    <button type="button" onClick={() => onMerged('SZ000001,SZ000002')}>
-      merge stock list
-    </button>
+  IntelligentImport: ({
+    onMerged,
+  }: {
+    onMerged: (value: string, options?: { committed?: boolean }) => void;
+  }) => (
+    <div>
+      <button type="button" onClick={() => onMerged('SZ000001,SZ000002')}>
+        merge stock list
+      </button>
+      <button type="button" onClick={() => onMerged('SZ000001,SZ000002', { committed: false })}>
+        merge stock list conflict
+      </button>
+    </div>
   ),
   LLMChannelEditor: ({
     items,
@@ -365,9 +375,9 @@ type ConfigState = {
   clearToast: typeof clearToast;
   isLoading: boolean;
   isSaving: boolean;
-  loadError: null;
-  saveError: null;
-  retryAction: null;
+  loadError: ParsedApiError | null;
+  saveError: ParsedApiError | null;
+  retryAction: 'load' | 'save' | null;
   load: typeof load;
   retry: ReturnType<typeof vi.fn>;
   save: typeof save;
@@ -1942,7 +1952,7 @@ describe('SettingsPage', () => {
     renderSettingsPage();
 
     const enabledCheckbox = await screen.findByTestId('scheduler-enabled-checkbox');
-    expect(enabledCheckbox).toBeChecked();
+    await waitFor(() => expect(enabledCheckbox).toBeChecked());
 
     fireEvent.click(enabledCheckbox);
 
@@ -2079,7 +2089,7 @@ describe('SettingsPage', () => {
     expect(saveButton).toBeDisabled();
 
     const enabledCheckbox = await screen.findByTestId('scheduler-enabled-checkbox');
-    expect(enabledCheckbox).toBeChecked();
+    await waitFor(() => expect(enabledCheckbox).toBeChecked());
     fireEvent.click(enabledCheckbox);
 
     await waitFor(() => expect(enabledCheckbox).not.toBeChecked());
@@ -2088,6 +2098,68 @@ describe('SettingsPage', () => {
 
     fireEvent.click(saveButton);
     await waitFor(() => expect(save).toHaveBeenCalledWith([{ key: 'SCHEDULE_ENABLED', value: 'false' }]));
+  });
+
+  it('retries saving through handleSaveConfig so post-save scheduler refresh still runs (OR-COR-ae91fe03 / OR-COR-bc2ab843)', async () => {
+    const baseState = buildSystemConfigState();
+    const retry = vi.fn().mockResolvedValue(true);
+    save.mockResolvedValue({ success: true });
+    getSchedulerStatus.mockResolvedValue({
+      enabled: true,
+      running: false,
+      scheduleTimes: ['18:00'],
+      nextRunAt: '2026-06-21T18:00:00+08:00',
+      lastRunAt: null,
+      lastSuccessAt: null,
+      lastError: null,
+    });
+
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({
+      activeCategory: 'system',
+      hasDirty: true,
+      dirtyCount: 1,
+      saveError: createParsedApiError({
+        title: '保存失败',
+        message: '请求超时，请重试',
+      }),
+      retryAction: 'save',
+      retry,
+      getChangedItems: () => [{ key: 'SCHEDULE_ENABLED', value: 'false' }],
+      itemsByCategory: {
+        ...baseState.itemsByCategory,
+        system: [
+          ...baseState.itemsByCategory.system,
+          {
+            key: 'SCHEDULE_ENABLED',
+            value: 'true',
+            rawValueExists: true,
+            isMasked: false,
+            schema: {
+              key: 'SCHEDULE_ENABLED',
+              category: 'system',
+              dataType: 'boolean',
+              uiControl: 'switch',
+              isSensitive: false,
+              isRequired: false,
+              isEditable: true,
+              options: [],
+              validation: {},
+              displayOrder: 8,
+            },
+          },
+        ],
+      },
+    }));
+
+    renderSettingsPage();
+
+    await waitFor(() => expect(getSchedulerStatus).toHaveBeenCalledTimes(1));
+    const retryButton = await screen.findByRole('button', { name: '重试保存' });
+    fireEvent.click(retryButton);
+
+    await waitFor(() => expect(save).toHaveBeenCalledWith([{ key: 'SCHEDULE_ENABLED', value: 'false' }]));
+    await waitFor(() => expect(getSchedulerStatus).toHaveBeenCalledTimes(2));
+    expect(retry).not.toHaveBeenCalled();
   });
 
   it('resets a scheduler-only override and lets navigation proceed', async () => {
@@ -2157,7 +2229,7 @@ describe('SettingsPage', () => {
     expect(saveButton).toBeDisabled();
 
     const enabledCheckbox = await screen.findByTestId('scheduler-enabled-checkbox');
-    expect(enabledCheckbox).toBeChecked();
+    await waitFor(() => expect(enabledCheckbox).toBeChecked());
     fireEvent.click(enabledCheckbox);
 
     await waitFor(() => expect(enabledCheckbox).not.toBeChecked());
@@ -2248,7 +2320,7 @@ describe('SettingsPage', () => {
     expect(saveButton).toBeDisabled();
 
     const enabledCheckbox = await screen.findByTestId('scheduler-enabled-checkbox');
-    expect(enabledCheckbox).not.toBeChecked();
+    await waitFor(() => expect(enabledCheckbox).not.toBeChecked());
     fireEvent.click(enabledCheckbox);
 
     await waitFor(() => expect(enabledCheckbox).toBeChecked());
@@ -3386,5 +3458,14 @@ describe('SettingsPage', () => {
       });
       expect(screen.queryByText('当前页面还有未保存的修改。刷新页面、关闭标签页或离开该页面会丢弃这些本地草稿。要继续吗？')).not.toBeInTheDocument();
     });
+  });
+
+  it('calls refreshAfterExternalSave without committed STOCK_LIST key on IntelligentImport conflict', async () => {
+    useSystemConfigMock.mockReturnValue(buildSystemConfigState({ activeCategory: 'base' }));
+    refreshAfterExternalSave.mockResolvedValueOnce(undefined);
+    renderSettingsPage();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'merge stock list conflict' }));
+    await waitFor(() => expect(refreshAfterExternalSave).toHaveBeenCalledWith([]));
   });
 });

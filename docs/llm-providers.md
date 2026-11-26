@@ -59,6 +59,26 @@ MODELFLARE_KEY=sk-xxx
 
 `gpt-6.1-sol` 是本项目的 Modelflare 默认模型；实际模型列表与可用性以账号权限、控制台和 Web 设置页「测试连接」结果为准。渠道模板仅决定新建配置的初始值，不会改写已保存的渠道、主模型或 fallback。
 
+### x6.ai 聚合平台
+
+[x6.ai 专属注册](https://console.x6pro.io/register?code=zJ2qSdns) · [API 文档](https://x6.ai/zh/docs) · [模型列表](https://x6.ai/zh/models)
+
+在 WebUI「设置 → AI 模型配置 → 快速添加渠道」中选择 `x6.ai`，可点击下拉框旁的「注册 x6.ai」创建账号；填写自己的 API Key，使用「获取模型」选择当前账号可用的模型，再测试连接。默认 Base URL 为 `https://api.x6.ai/v1`，接口按服务商提供的 OpenAI-compatible Chat Completions 文档配置。该预设不会改写已有用户渠道。
+
+本地或 Docker 也可配置：
+
+```env
+LLM_CHANNELS=x6ai
+LLM_X6AI_PROTOCOL=openai
+LLM_X6AI_BASE_URL=https://api.x6.ai/v1
+LLM_X6AI_API_KEY=sk-your-own-key
+LLM_X6AI_MODELS=openai/anthropic/claude-haiku-5-5-discount
+```
+
+模型仅为示例，需从账号模型列表获取并测试连接。x6.ai 的 `vendor/model` ID 必须保留：WebUI「获取模型」会添加一次 `openai/` 路由层，例如 `anthropic/…` 保存为 `openai/anthropic/…`，`openai/…` 保存为 `openai/openai/…`。手动配置推荐复制获取模型后的完整值；已有配置不会被自动重写。
+
+GitHub Actions 中将 `LLM_CHANNELS=x6ai`、协议、地址和模型配置为 Variables，`LLM_X6AI_API_KEY` 或 `LLM_X6AI_API_KEYS` 配置为 Secrets；每日分析工作流已透传该渠道全部字段。Docker / Desktop 复用相同配置与 WebUI。模型目录不保证当前 Key 对每个模型都有调用权限；以测试连接结果为准，失败时可换用已验证模型。测试用 Key 不应提交到仓库。
+
 ### DeepSeek 官方渠道
 
 ```env
@@ -106,7 +126,6 @@ LITELLM_FALLBACK_MODELS=openai/gpt-5.6-terra,openai/gpt-5.6-luna
 | 服务商 | 渠道名 | 协议 | Base URL | 模型示例 |
 | --- | --- | --- | --- | --- |
 | Modelflare | `modelflare` | `openai` | `https://modelflare.dev/v1` | `gpt-6.1-sol`（以账号可用模型为准） |
-| AIHubmix | `aihubmix` | `openai` | `https://aihubmix.com/v1` | `gpt-6.1-sol,claude-sonnet-4-6,gemini-3.6-flash` |
 | OpenAI | `openai` | `openai` | `https://api.openai.com/v1` | `gpt-6.1-sol,gpt-6.1-terra` |
 | DeepSeek | `deepseek` | `deepseek` | `https://api.deepseek.com` | `deepseek-v4-flash,deepseek-v4-pro` |
 | Gemini | `gemini` | `gemini` | 留空 | `gemini-3.6-flash,gemini-3.5-flash-lite` |
@@ -120,7 +139,8 @@ LITELLM_FALLBACK_MODELS=openai/gpt-5.6-terra,openai/gpt-5.6-luna
 | 硅基流动 / SiliconFlow | `siliconflow` | `openai` | `https://api.siliconflow.cn/v1` | `deepseek-ai/DeepSeek-V3.2,Qwen/Qwen3-235B-A22B-Thinking-2507` |
 | OpenRouter | `openrouter` | `openai` | `https://openrouter.ai/api/v1` | `~anthropic/claude-sonnet-latest,~openai/gpt-latest` |
 | Requesty | `requesty` | `openai` | `https://router.requesty.ai/v1`（EU：`https://router.eu.requesty.ai/v1`） | `claude-sonnet-4-6,gpt-6.1-sol` |
-| Anspire Open（兼容） | `anspire` | `openai` | `https://open-gateway.anspire.cn/v6`（示例） | `Doubao-Seed-2.0-lite,Doubao-Seed-2.0-pro,qwen3.5-flash`（示例） |
+| AIHubmix | `aihubmix` | `openai` | `https://aihubmix.com/v1` | `gpt-6.1-sol,claude-sonnet-4-6,gemini-3.6-flash` |
+| Anspire Open | `anspire` | `openai` | `https://open-gateway.anspire.cn/v6`（示例） | `Doubao-Seed-2.0-lite,Doubao-Seed-2.0-pro,qwen3.5-flash`（示例） |
 | Ollama | `ollama` | `ollama` | `http://127.0.0.1:11434` | `llama3.2,qwen2.5` |
 
 ## 官方来源与兼容性
